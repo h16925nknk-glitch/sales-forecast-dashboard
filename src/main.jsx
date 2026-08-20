@@ -51,15 +51,47 @@ function dedupe(rows) {
   });
   return [...m.values()].sort((a,b)=>a.date.localeCompare(b.date));
 }
+function getSeason(dateString) {
+  const d = new Date(`${dateString}T12:00:00`);
+  const month = d.getMonth() + 1;
+  const day = d.getDate();
 
+  if (
+    (month === 11 && day >= 8) ||
+    month === 12 ||
+    month <= 3 ||
+    (month === 4 && day <= 10)
+  ) {
+    return 'crab';
+  }
+
+  return 'off';
+}
 function closestPriorYear(rows, target) {
   const t = new Date(`${target}T12:00:00`);
-  const y = t.getFullYear()-1;
-  const anchor = new Date(t); anchor.setFullYear(y);
-  return rows.filter(r => {
-    const d = new Date(`${r.date}T12:00:00`);
-    return d.getFullYear()===y && d.getDay()===t.getDay() && Math.abs(d-anchor)/86400000 <= 10 && r.open;
-  }).sort((a,b)=>Math.abs(new Date(a.date)-anchor)-Math.abs(new Date(b.date)-anchor))[0] || null;
+  const targetSeason = getSeason(target);
+
+  const y = t.getFullYear() - 1;
+  const anchor = new Date(t);
+  anchor.setFullYear(y);
+
+  return rows
+    .filter(r => {
+      const d = new Date(`${r.date}T12:00:00`);
+
+      return (
+        d.getFullYear() === y &&
+        d.getDay() === t.getDay() &&
+        Math.abs(d - anchor) / 86400000 <= 10 &&
+        r.open &&
+        getSeason(r.date) === targetSeason
+      );
+    })
+    .sort(
+      (a, b) =>
+        Math.abs(new Date(`${a.date}T12:00:00`) - anchor) -
+        Math.abs(new Date(`${b.date}T12:00:00`) - anchor)
+    )[0] || null;
 }
 
 function exactPriorYear(rows, target) {
@@ -69,8 +101,15 @@ function exactPriorYear(rows, target) {
 
 function forecast(rows, reservations, publicEvents, target) {
   const t = new Date(`${target}T12:00:00`);
-  const wd = t.getDay();
-  const before = rows.filter(r=>r.date < target && r.open);
+const wd = t.getDay();
+const targetSeason = getSeason(target);
+
+const before = rows.filter(
+  r =>
+    r.date < target &&
+    r.open &&
+    getSeason(r.date) === targetSeason
+);
   const sameWeekday = before.filter(r=>r.weekday===wd).slice(-8);
   const recent28 = before.slice(-28);
   const prior = closestPriorYear(rows, target);
@@ -104,9 +143,28 @@ function forecast(rows, reservations, publicEvents, target) {
 
   const eventAdjustedGuests = baseGuests == null ? null : baseGuests * (1 + publicImpactPct);
   const eventAdjustedSales = baseSales == null ? null : baseSales * (1 + publicImpactPct);
+const historicalGuests = before
+  .map(r => r.guests)
+  .filter(n => Number.isFinite(n) && n > 0);
 
+const maxHistoricalGuests = historicalGuests.length
+  ? Math.max(...historicalGuests)
+  : null;
+
+let finalGuests =
+  eventAdjustedGuests == null
+    ? (groupGuests || null)
+    : eventAdjustedGuests + groupGuests;
+
+if (
+  finalGuests &&
+  maxHistoricalGuests &&
+  finalGuests > maxHistoricalGuests * 1.5
+) {
+  finalGuests = maxHistoricalGuests * 1.15 + groupGuests;
+}
   return {
-    guests: eventAdjustedGuests == null ? (groupGuests || null) : eventAdjustedGuests + groupGuests,
+    guests: finalGuests,
     sales: eventAdjustedSales == null ? null : eventAdjustedSales + groupGuests * estimatedSpend,
     baseGuests, baseSales, groupGuests, groupReservations, publicEvents: targetPublic,
     publicImpactPct, prior, exactPrior: exactPriorYear(rows, target),
