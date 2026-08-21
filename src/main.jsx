@@ -2,12 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import Papa from 'papaparse';
 import './styles.css';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { db } from './firebase';
 
 const STORAGE_KEY = 'sales-forecast-history-v2';
 const RESERVATIONS_KEY = 'sales-forecast-group-reservations-v1';
 const PUBLIC_EVENTS_CACHE_KEY = 'sales-forecast-public-events-cache-v1';
 const WEATHER_CACHE_KEY = 'sales-forecast-weather-cache-v1';
-
+const FIRESTORE_COLLECTION = 'salesForecast';
+const FIRESTORE_DOCUMENT = 'storeData';
 const STORE_AREA = '東京都港区南青山・表参道周辺';
 
 const weekdayJa = ['日', '月', '火', '水', '木', '金', '土'];
@@ -980,32 +983,148 @@ function App() {
     setExpandedEvents,
   ] = useState([]);
 
-  useEffect(() => {
-    localStorage.setItem(
-      STORAGE_KEY,
-      JSON.stringify(rows)
-    );
-  }, [rows]);
+  const [firestoreReady, setFirestoreReady] = useState(false);
 
-  useEffect(() => {
-    localStorage.setItem(
-      RESERVATIONS_KEY,
-      JSON.stringify(reservations)
-    );
-  }, [reservations]);
-
-  useEffect(() => {
-    localStorage.setItem(
-      PUBLIC_EVENTS_CACHE_KEY,
-      JSON.stringify(publicEvents)
-    );
-  }, [publicEvents]);
 useEffect(() => {
-  localStorage.setItem(
-    WEATHER_CACHE_KEY,
-    JSON.stringify(weatherData)
-  );
-}, [weatherData]);
+  const loadSharedData = async () => {
+    try {
+      const ref = doc(
+        db,
+        FIRESTORE_COLLECTION,
+        FIRESTORE_DOCUMENT
+      );
+
+      // このURLに残っている既存データ
+      const localRows = JSON.parse(
+        localStorage.getItem(STORAGE_KEY) || '[]'
+      );
+
+      const localReservations = JSON.parse(
+        localStorage.getItem(RESERVATIONS_KEY) || '[]'
+      );
+
+      const localPublicEvents = JSON.parse(
+        localStorage.getItem(PUBLIC_EVENTS_CACHE_KEY) || '[]'
+      );
+
+      const localWeatherData = JSON.parse(
+        localStorage.getItem(WEATHER_CACHE_KEY) || '[]'
+      );
+
+      const snap = await getDoc(ref);
+
+      if (snap.exists()) {
+        const data = snap.data();
+
+        const remoteRows =
+          Array.isArray(data.rows) ? data.rows : [];
+
+        const remoteReservations =
+          Array.isArray(data.reservations)
+            ? data.reservations
+            : [];
+
+        const remotePublicEvents =
+          Array.isArray(data.publicEvents)
+            ? data.publicEvents
+            : [];
+
+        const remoteWeatherData =
+          Array.isArray(data.weatherData)
+            ? data.weatherData
+            : [];
+
+        // Firestoreが空で、この端末に既存データがある場合
+        // 既存データをFirestoreへ救出
+        if (
+          remoteRows.length === 0 &&
+          localRows.length > 0
+        ) {
+          setRows(localRows);
+          setReservations(localReservations);
+          setPublicEvents(localPublicEvents);
+          setWeatherData(localWeatherData);
+
+          await setDoc(
+            ref,
+            {
+              rows: localRows,
+              reservations: localReservations,
+              publicEvents: localPublicEvents,
+              weatherData: localWeatherData,
+              updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+          );
+        } else {
+          setRows(remoteRows);
+          setReservations(remoteReservations);
+          setPublicEvents(remotePublicEvents);
+          setWeatherData(remoteWeatherData);
+        }
+      } else {
+        // Firestore自体がまだない場合
+        setRows(localRows);
+        setReservations(localReservations);
+        setPublicEvents(localPublicEvents);
+        setWeatherData(localWeatherData);
+
+        await setDoc(ref, {
+          rows: localRows,
+          reservations: localReservations,
+          publicEvents: localPublicEvents,
+          weatherData: localWeatherData,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+
+      setFirestoreReady(true);
+    } catch (err) {
+      console.error('Firestore読み込みエラー', err);
+
+      setStatus(
+        '共有データの読み込みに失敗しました。'
+      );
+    }
+  };
+
+  loadSharedData();
+}, []);
+useEffect(() => {
+  if (!firestoreReady) return;
+
+  const saveSharedData = async () => {
+    try {
+      await setDoc(
+        doc(
+          db,
+          FIRESTORE_COLLECTION,
+          FIRESTORE_DOCUMENT
+        ),
+        {
+          rows,
+          reservations,
+          publicEvents,
+          weatherData,
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          merge: true,
+        }
+      );
+    } catch (err) {
+      console.error('Firestore保存エラー', err);
+    }
+  };
+
+  saveSharedData();
+}, [
+  rows,
+  reservations,
+  publicEvents,
+  weatherData,
+  firestoreReady,
+]);
   const result = useMemo(
     () =>
       forecast(
