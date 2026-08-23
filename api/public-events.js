@@ -39,66 +39,54 @@ export default async function handler(req, res) {
 
   const endDate = iso(end);
 
- const prompt = `
-東京都港区南青山・表参道周辺で、
-飲食店の来客人数に影響しそうな公開情報をWeb検索してください。
+  const prompt = `
+東京都港区南青山の飲食店の来客予測に使うため、
+以下の2施設について対象期間中の公開情報だけをWeb検索してください。
 
 対象期間:
 ${date} 〜 ${endDate}
 
-【検索対象エリア】
+【1. 小原流会館】
 
-特に次の地域を優先してください。
+対象期間中に開催される、
 
-・南青山5丁目
-・南青山6丁目
-・北青山3丁目
-・神宮前4丁目
-・神宮前5丁目
-・神宮前6丁目
-・表参道駅周辺
-・青山通り周辺
+・展示
+・催事
+・イベント
+・講習会
+・大会
+・一般来場者が増える催し
 
-厳密な距離計算は不要です。
+を確認してください。
 
-南青山5-4-41の店舗から徒歩圏・近隣と考えられる
-南青山、表参道、青山周辺の情報を対象にしてください。
+category:
+ohara
 
-【探す情報】
+【2. 根津美術館】
 
-来客人数に影響しそうな公開情報を幅広く探してください。
+対象期間中の、
 
-例:
+・特別展
+・企画展
+・展示
+・イベント
+・休館情報
 
-・美術館の企画展、特別展、展示
-・ギャラリーの展示
-・会館、ホールの催事やイベント
-・学校の公開行事
-・商業施設の催事
-・ポップアップ
-・マーケット
-・展示会
-・講演会
-・ファッション関連イベント
-・文化イベント
-・地域イベント
-・施設の休館
-・その他、人流が増減しそうな公開情報
+を確認してください。
 
-小原流会館、根津美術館、青南小学校など、
-このエリアにある施設の公開情報も検索対象です。
+category:
+nezu
 
 【重要】
 
-・対象期間内の情報だけ
-・開催日が確認できるものだけ
+・この2施設以外は検索対象にしない
+・対象期間外の情報は入れない
+・開催日が確認できないものは入れない
 ・推測は禁止
-・公式サイト、施設公式サイト、自治体などを優先
-・同じ情報を重複登録しない
-・小規模すぎて飲食店の来客にほぼ影響しないものは不要
-・情報が少ない場合でも、検索を1施設だけで終わらせず、
-  南青山・表参道周辺の複数施設を確認する
-・7日間合計最大10件
+・同じイベントを重複させない
+・公式サイト、施設公式情報を優先
+・該当情報がなければ無理に作らない
+・7日間合計で最大6件
 
 impactScore:
 
@@ -107,16 +95,8 @@ impactScore:
 2 = 中
 3 = 大
 
-category:
-
-museum
-gallery
-hall
-school
-commercial
-event
-closed
-other
+小原流会館や根津美術館で一般来場者が増える催しは、
+特にランチ客への影響を考慮してください。
 
 必ずJSONだけ返してください。
 Markdownや説明文は禁止です。
@@ -130,7 +110,7 @@ Markdownや説明文は禁止です。
           "name": "イベント名",
           "time": "",
           "venue": "",
-          "category": "event",
+          "category": "ohara",
           "impactScore": 2,
           "description": "来客への影響理由",
           "sourceName": "情報元"
@@ -176,7 +156,7 @@ Markdownや説明文は禁止です。
 
           input: prompt,
 
-          max_output_tokens: 1200,
+          max_output_tokens: 900,
         }),
       }
     );
@@ -228,14 +208,8 @@ Markdownや説明文は禁止です。
     }
 
     const allowedCategories = new Set([
-      "museum",
-      "gallery",
-      "hall",
-      "school",
-      "commercial",
-      "event",
-      "closed",
-      "other",
+      "ohara",
+      "nezu",
     ]);
 
     const days = Array.isArray(parsed.days)
@@ -247,7 +221,7 @@ Markdownや説明文は禁止です。
 
             const events = Array.isArray(day.events)
               ? day.events
-                  .slice(0, 10)
+                  .slice(0, 6)
                   .map((e, i) => ({
                     id: `ai-${dayDate}-${dayIndex}-${i}`,
 
@@ -269,7 +243,7 @@ Markdownや説明文は禁止です。
                       e.category
                     )
                       ? e.category
-                      : "other",
+                      : "ohara",
 
                     impactScore: Math.max(
                       0,
@@ -310,7 +284,7 @@ Markdownや説明文は禁止です。
     return res.status(200).json({
       startDate: date,
       endDate,
-      area: "東京都港区南青山5-4-41から約1km以内",
+      area: "小原流会館・根津美術館",
       days,
       events,
     });
