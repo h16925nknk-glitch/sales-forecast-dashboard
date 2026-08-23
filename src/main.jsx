@@ -1317,14 +1317,7 @@ const data = {
     : [],
 };
 
-        if (!res.ok) {
-          throw new Error(
-            '取得できませんでした'
-          );
-        }
-
-        const data =
-          await res.json();
+      
 
         const incoming =
           Array.isArray(data.events)
