@@ -1279,13 +1279,43 @@ useEffect(() => {
       );
 
       try {
-        const res = await fetch(
-          `/api/public-events?date=${encodeURIComponent(
-            target
-          )}&area=${encodeURIComponent(
-            STORE_AREA
-          )}`
-        );
+        const [eventRes, weatherRes] = await Promise.all([
+  fetch(
+    `/api/public-events?date=${encodeURIComponent(
+      target
+    )}&area=${encodeURIComponent(
+      STORE_AREA
+    )}`
+  ),
+
+  fetch(
+    `/api/weather?date=${encodeURIComponent(
+      target
+    )}`
+  ),
+]);
+
+if (!eventRes.ok) {
+  throw new Error(
+    "周辺情報を取得できませんでした"
+  );
+}
+
+if (!weatherRes.ok) {
+  throw new Error(
+    "天気情報を取得できませんでした"
+  );
+}
+
+const eventData = await eventRes.json();
+const weatherData = await weatherRes.json();
+
+const data = {
+  ...eventData,
+  weather: Array.isArray(weatherData.weather)
+    ? weatherData.weather
+    : [],
+};
 
         if (!res.ok) {
           throw new Error(
