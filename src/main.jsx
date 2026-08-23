@@ -1301,11 +1301,6 @@ if (!eventRes.ok) {
   );
 }
 
-if (!weatherRes.ok) {
-  throw new Error(
-    "天気情報を取得できませんでした"
-  );
-}
 
 const eventData = await eventRes.json();
 const weatherData = await weatherRes.json();
