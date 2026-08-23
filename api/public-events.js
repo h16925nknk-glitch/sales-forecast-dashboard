@@ -5,10 +5,6 @@ function iso(d) {
   return `${y}-${m}-${day}`;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({
@@ -16,10 +12,7 @@ export default async function handler(req, res) {
     });
   }
 
-  const {
-    date,
-    area = "東京都港区南青山・表参道周辺",
-  } = req.query;
+  const { date } = req.query;
 
   if (!date) {
     return res.status(400).json({
@@ -47,44 +40,37 @@ export default async function handler(req, res) {
   const endDate = iso(end);
 
   const prompt = `
-東京都港区南青山の飲食店向けに、
-${date} 〜 ${endDate} の公開イベント情報をWeb検索してください。
+東京都港区南青山5-4-41を中心として、
+おおむね半径1km以内で開催・発生する公開情報をWeb検索してください。
 
-調査対象は次の5種類だけです。
+対象期間:
+${date} 〜 ${endDate}
 
-1. 小原流会館
-対象期間中の展示・催事・イベント・講習会など。
+目的は、南青山5-4-41周辺の飲食店の
+来客人数に影響しそうな情報を集めることです。
 
-2. 根津美術館
-対象期間中の特別展・企画展・展示・イベント・休館情報。
+次のような情報を対象にしてください。
 
-3. 港区立青南小学校
-公開情報で確認できる
-保護者会・運動会・学校公開・説明会・父兄が集まる行事。
-公開情報がなければ無理に追加しないこと。
-
-4. 選挙
-対象期間に投票日がある主要選挙。
-衆院選、参院選、東京都知事選、東京都議選、
-港区長選、港区議選など。
-
-5. 大規模な祭り・花火大会
-港区または東京都心で開催され、
-南青山周辺の人流や飲食需要に影響しそうな
-大規模な祭り・花火大会。
-
-距離だけを理由に除外しないこと。
-
-例:
-麻布十番納涼まつり級のイベントは必ず確認対象に含める。
+・美術館、ギャラリーの展示や企画展
+・会館、ホール等のイベント
+・学校行事で一般公開されているもの
+・商業施設の催事
+・マーケット、ポップアップ
+・講演会、展示会
+・地域イベント
+・施設の休館
+・その他、人流が増減しそうな公開情報
 
 重要:
-・対象期間外は入れない
-・開催日不明のものは入れない
+・南青山5-4-41からおおむね1km以内のみ
+・対象期間外は除外
+・開催日が確認できないものは除外
 ・推測は禁止
-・重複禁止
 ・公式サイト、自治体、施設公式情報を優先
-・7日間合計最大10件
+・小規模すぎて飲食店の来客にほぼ影響しない情報は不要
+・同じイベントを重複させない
+・7日間合計で最大10件
+・該当情報がなければ無理に作らない
 
 impactScore:
 0 = ほぼ影響なし
@@ -92,16 +78,19 @@ impactScore:
 2 = 中
 3 = 大
 
-category:
-ohara
-nezu
-seinan_school
-election
-festival
-fireworks
+category は以下から選択:
+
+museum
+gallery
+hall
+school
+commercial
+event
+closed
 other
 
 JSONだけ返してください。
+説明文やMarkdownは禁止です。
 
 {
   "days": [
@@ -112,7 +101,7 @@ JSONだけ返してください。
           "name": "イベント名",
           "time": "",
           "venue": "",
-          "category": "festival",
+          "category": "event",
           "impactScore": 2,
           "description": "来客への影響理由",
           "sourceName": "情報元"
@@ -123,59 +112,45 @@ JSONだけ返してください。
 }
 `.trim();
 
-  async function callOpenAI() {
-    return fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
+  try {
+    const apiRes = await fetch(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
 
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      },
-
-      body: JSON.stringify({
-        model: "gpt-5.6-luna",
-
-        reasoning: {
-          effort: "none",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
 
-        tools: [
-          {
-            type: "web_search",
-            search_context_size: "low",
+        body: JSON.stringify({
+          model: "gpt-5.6-luna",
 
-            user_location: {
-              type: "approximate",
-              country: "JP",
-              city: "Tokyo",
-              region: "Tokyo",
-              timezone: "Asia/Tokyo",
-            },
+          reasoning: {
+            effort: "none",
           },
-        ],
 
-        input: prompt,
+          tools: [
+            {
+              type: "web_search",
+              search_context_size: "low",
 
-        max_output_tokens: 1200,
-      }),
-    });
-  }
+              user_location: {
+                type: "approximate",
+                country: "JP",
+                city: "Tokyo",
+                region: "Tokyo",
+                timezone: "Asia/Tokyo",
+              },
+            },
+          ],
 
-  try {
-    let apiRes = await callOpenAI();
+          input: prompt,
 
-    if (apiRes.status === 429) {
-      const firstError = await apiRes.text();
-
-      console.warn(
-        "OpenAI rate limit hit. Retrying once:",
-        firstError
-      );
-
-      await sleep(10000);
-
-      apiRes = await callOpenAI();
-    }
+          max_output_tokens: 1200,
+        }),
+      }
+    );
 
     if (!apiRes.ok) {
       const detail = await apiRes.text();
@@ -213,7 +188,10 @@ JSONだけ返してください。
     try {
       parsed = JSON.parse(cleaned);
     } catch (error) {
-      console.error("JSON parse failed:", cleaned);
+      console.error(
+        "JSON parse failed:",
+        cleaned
+      );
 
       parsed = {
         days: [],
@@ -221,19 +199,22 @@ JSONだけ返してください。
     }
 
     const allowedCategories = new Set([
-      "ohara",
-      "nezu",
-      "seinan_school",
-      "election",
-      "festival",
-      "fireworks",
+      "museum",
+      "gallery",
+      "hall",
+      "school",
+      "commercial",
+      "event",
+      "closed",
       "other",
     ]);
 
     const days = Array.isArray(parsed.days)
       ? parsed.days
           .map((day, dayIndex) => {
-            const dayDate = String(day.date || "").slice(0, 10);
+            const dayDate = String(
+              day.date || ""
+            ).slice(0, 10);
 
             const events = Array.isArray(day.events)
               ? day.events
@@ -255,7 +236,9 @@ JSONだけ返してください。
                       e.venue || ""
                     ).slice(0, 100),
 
-                    category: allowedCategories.has(e.category)
+                    category: allowedCategories.has(
+                      e.category
+                    )
                       ? e.category
                       : "other",
 
@@ -291,15 +274,18 @@ JSONだけ返してください。
           )
       : [];
 
-    const events = days.flatMap((day) => day.events);
+    const events = days.flatMap(
+      (day) => day.events
+    );
 
     return res.status(200).json({
       startDate: date,
       endDate,
-      area,
+      area: "東京都港区南青山5-4-41から約1km以内",
       days,
       events,
     });
+
   } catch (error) {
     console.error(
       "Public event search error:",
