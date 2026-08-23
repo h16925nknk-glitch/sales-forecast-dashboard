@@ -5,6 +5,43 @@ function iso(d) {
   return `${y}-${m}-${day}`;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getRetryDelayMs(detail) {
+  const text = String(detail || "");
+
+  // 例: "Please try again in 7.906s"
+  const secondsMatch = text.match(
+    /try again in\s+([\d.]+)s/i
+  );
+
+  if (secondsMatch) {
+    const seconds = Number(secondsMatch[1]);
+
+    if (Number.isFinite(seconds)) {
+      return Math.ceil(seconds * 1000) + 2000;
+    }
+  }
+
+  // 例: "Please try again in 800ms"
+  const msMatch = text.match(
+    /try again in\s+([\d.]+)ms/i
+  );
+
+  if (msMatch) {
+    const ms = Number(msMatch[1]);
+
+    if (Number.isFinite(ms)) {
+      return Math.ceil(ms) + 2000;
+    }
+  }
+
+  // 待ち時間が取れない場合
+  return 15000;
+}
+
 export default async function handler(req, res) {
   if (req.method !== "GET") {
     return res.status(405).json({
@@ -40,120 +77,57 @@ export default async function handler(req, res) {
   const endDate = iso(end);
 
   const prompt = `
-東京都港区南青山にある飲食店の来客予測に使用するため、
-対象期間中の公開情報をWeb検索してください。
+東京都港区南青山の飲食店の来客予測に使うため、
+次の2施設だけについて公開情報をWeb検索してください。
 
 対象期間:
 ${date} 〜 ${endDate}
 
-調査対象は次の4種類です。
-
-【1. 小原流会館】
+【小原流会館】
 
 対象期間中の、
-
 ・展示
 ・催事
 ・イベント
-・講習会
-・大会
 ・一般来場者が増える催し
 
-を確認してください。
+category は "ohara"
 
-category:
-ohara
-
-【2. 根津美術館】
+【根津美術館】
 
 対象期間中の、
-
 ・特別展
 ・企画展
 ・展示
 ・イベント
 ・休館情報
 
-を確認してください。
+category は "nezu"
 
-category:
-nezu
-
-【3. 港区立青南小学校】
-
-公開情報として確認できる対象期間中の、
-
-・保護者会
-・運動会
-・学校公開
-・説明会
-・保護者が来校する行事
-・その他、来校者が増える学校行事
-
-を確認してください。
-
-公開情報で確認できない場合は追加しないでください。
-推測は禁止です。
-
-category:
-seinan_school
-
-【4. 南青山・表参道周辺の主要イベント】
-
-対象地域:
-
-・南青山
-・表参道
-・北青山
-・外苑前
-・神宮前の表参道周辺
-
-対象となる情報:
-
-・大規模または集客力のあるイベント
-・商業施設の主要催事
-・展示会
-・マーケット
-・ポップアップ
-・ファッションイベント
-・文化イベント
-・ホールや会館の主要イベント
-・その他、周辺の人流に影響しそうな催し
-
-小規模なイベントを大量に拾う必要はありません。
-
-飲食店の来客数に影響する可能性があるものを優先し、
-このカテゴリは7日間合計で最大5件までにしてください。
-
-category:
-local_event
-
-【重要ルール】
-
-・対象期間内の情報だけ
-・開催日が確認できるものだけ
-・推測は禁止
-・同じイベントを重複登録しない
-・公式サイト、自治体、施設公式情報を優先
-・小規模すぎて人流への影響がほぼないものは不要
-・情報が存在しないカテゴリは空で構わない
-・7日間全体で最大12件程度
-・複数日にわたる企画展やイベントは、
-  対象期間内の各開催日に登録してください
+重要:
+・この2施設以外は検索しない
+・対象期間内だけ
+・日付を確認できる情報だけ
+・推測禁止
+・公式情報を優先
+・同じイベントを重複させない
+・細かい情報を大量に集める必要はない
+・来客予測に影響しそうな主要情報だけ
+・7日間合計で最大4件程度
+・該当情報がなければ空でよい
 
 impactScore:
-
 0 = ほぼ影響なし
 1 = 小
 2 = 中
 3 = 大
 
-小原流会館、根津美術館、青南小学校については、
-特にランチ来客への影響を考慮してください。
+複数日にわたる展示については、
+対象期間内の開催日に反映してください。
 `.trim();
 
-  try {
-    const apiRes = await fetch(
+  async function makeOpenAIRequest() {
+    return fetch(
       "https://api.openai.com/v1/responses",
       {
         method: "POST",
@@ -212,6 +186,7 @@ impactScore:
 
                         events: {
                           type: "array",
+                          maxItems: 4,
 
                           items: {
                             type: "object",
@@ -235,8 +210,6 @@ impactScore:
                                 enum: [
                                   "ohara",
                                   "nezu",
-                                  "seinan_school",
-                                  "local_event",
                                 ],
                               },
 
@@ -283,24 +256,60 @@ impactScore:
             },
           },
 
-          max_output_tokens: 1800,
+          max_output_tokens: 1200,
         }),
       }
     );
+  }
 
-    if (!apiRes.ok) {
+  try {
+    let apiRes = null;
+
+    /*
+     * 最大3回。
+     * 429ならOpenAIが指定した時間を待って再試行。
+     */
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      apiRes = await makeOpenAIRequest();
+
+      if (apiRes.ok) {
+        break;
+      }
+
       const detail = await apiRes.text();
 
       console.error(
-        "OpenAI API error:",
+        `OpenAI API error attempt ${attempt}:`,
         apiRes.status,
         detail
       );
 
-      return res.status(apiRes.status).json({
+      if (apiRes.status !== 429) {
+        return res.status(apiRes.status).json({
+          error: "OpenAI request failed",
+          status: apiRes.status,
+        });
+      }
+
+      if (attempt === 3) {
+        return res.status(429).json({
+          error: "OpenAI rate limit exceeded",
+          status: 429,
+        });
+      }
+
+      const waitMs = getRetryDelayMs(detail);
+
+      console.log(
+        `Rate limit hit. Waiting ${waitMs}ms before retry.`
+      );
+
+      await sleep(waitMs);
+    }
+
+    if (!apiRes || !apiRes.ok) {
+      return res.status(502).json({
         error: "OpenAI request failed",
-        status: apiRes.status,
-        detail,
       });
     }
 
@@ -343,8 +352,6 @@ impactScore:
     const allowedCategories = new Set([
       "ohara",
       "nezu",
-      "seinan_school",
-      "local_event",
     ]);
 
     const days = Array.isArray(parsed.days)
@@ -355,45 +362,48 @@ impactScore:
             ).slice(0, 10);
 
             const events = Array.isArray(day.events)
-              ? day.events.map((e, i) => ({
-                  id: `ai-${dayDate}-${dayIndex}-${i}`,
+              ? day.events
+                  .slice(0, 4)
+                  .map((e, i) => ({
+                    id: `ai-${dayDate}-${dayIndex}-${i}`,
 
-                  date: dayDate,
+                    date: dayDate,
 
-                  name: String(
-                    e.name || ""
-                  ).slice(0, 120),
+                    name: String(
+                      e.name || ""
+                    ).slice(0, 120),
 
-                  time: String(
-                    e.time || ""
-                  ).slice(0, 60),
+                    time: String(
+                      e.time || ""
+                    ).slice(0, 60),
 
-                  venue: String(
-                    e.venue || ""
-                  ).slice(0, 100),
+                    venue: String(
+                      e.venue || ""
+                    ).slice(0, 100),
 
-                  category: allowedCategories.has(
-                    e.category
-                  )
-                    ? e.category
-                    : "local_event",
-
-                  impactScore: Math.max(
-                    0,
-                    Math.min(
-                      3,
-                      Number(e.impactScore) || 0
+                    category: allowedCategories.has(
+                      e.category
                     )
-                  ),
+                      ? e.category
+                      : "ohara",
 
-                  description: String(
-                    e.description || ""
-                  ).slice(0, 180),
+                    impactScore: Math.max(
+                      0,
+                      Math.min(
+                        3,
+                        Number(e.impactScore) || 0
+                      )
+                    ),
 
-                  sourceName: String(
-                    e.sourceName || ""
-                  ).slice(0, 100),
-                }))
+                    description: String(
+                      e.description || ""
+                    ).slice(0, 180),
+
+                    sourceName: String(
+                      e.sourceName || ""
+                    ).slice(0, 100),
+                  }))
+                  .filter((e) => e.name)
               : [];
 
             return {
@@ -456,8 +466,7 @@ impactScore:
     return res.status(200).json({
       startDate: date,
       endDate,
-      area:
-        "小原流会館・根津美術館・青南小学校・南青山表参道周辺",
+      area: "小原流会館・根津美術館",
       days: cleanedDays,
       events,
     });
