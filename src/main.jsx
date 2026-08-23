@@ -1279,19 +1279,25 @@ useEffect(() => {
       );
 
       try {
-        const [eventRes, weatherRes] = await Promise.all([
+       const [eventRes, weatherRes] = await Promise.all([
   fetch(
     `/api/public-events?date=${encodeURIComponent(
       target
     )}&area=${encodeURIComponent(
       STORE_AREA
-    )}`
+    )}&t=${Date.now()}`,
+    {
+      cache: "no-store",
+    }
   ),
 
   fetch(
     `/api/weather?date=${encodeURIComponent(
       target
-    )}`
+    )}&t=${Date.now()}`,
+    {
+      cache: "no-store",
+    }
   ),
 ]);
 
