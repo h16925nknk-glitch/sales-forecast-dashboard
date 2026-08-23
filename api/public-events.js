@@ -40,15 +40,15 @@ export default async function handler(req, res) {
   const endDate = iso(end);
 
   const prompt = `
-東京都港区南青山の飲食店の来客予測に使うため、
-以下の2施設について対象期間中の公開情報だけをWeb検索してください。
+東京都港区南青山の飲食店の来客予測に使用するため、
+次の2施設についてWeb検索してください。
 
 対象期間:
 ${date} 〜 ${endDate}
 
-【1. 小原流会館】
+【小原流会館】
 
-対象期間中に開催される、
+対象期間中の、
 
 ・展示
 ・催事
@@ -59,10 +59,9 @@ ${date} 〜 ${endDate}
 
 を確認してください。
 
-category:
-ohara
+category は "ohara"。
 
-【2. 根津美術館】
+【根津美術館】
 
 対象期間中の、
 
@@ -74,19 +73,17 @@ ohara
 
 を確認してください。
 
-category:
-nezu
+category は "nezu"。
 
 【重要】
 
-・この2施設以外は検索対象にしない
+・この2施設以外の情報は不要
 ・対象期間外の情報は入れない
-・開催日が確認できないものは入れない
+・開催日が確認できるものだけ
 ・推測は禁止
-・同じイベントを重複させない
 ・公式サイト、施設公式情報を優先
+・同じイベントを重複登録しない
 ・該当情報がなければ無理に作らない
-・7日間合計で最大6件
 
 impactScore:
 
@@ -95,30 +92,12 @@ impactScore:
 2 = 中
 3 = 大
 
-小原流会館や根津美術館で一般来場者が増える催しは、
-特にランチ客への影響を考慮してください。
+小原流会館または根津美術館で
+一般来場者が増える催しがある場合、
+南青山の飲食店のランチ来客への影響を考慮してください。
 
-必ずJSONだけ返してください。
-Markdownや説明文は禁止です。
-
-{
-  "days": [
-    {
-      "date": "YYYY-MM-DD",
-      "events": [
-        {
-          "name": "イベント名",
-          "time": "",
-          "venue": "",
-          "category": "ohara",
-          "impactScore": 2,
-          "description": "来客への影響理由",
-          "sourceName": "情報元"
-        }
-      ]
-    }
-  ]
-}
+複数日にわたる展示の場合は、
+対象期間内の各開催日について日付ごとに登録してください。
 `.trim();
 
   try {
@@ -156,7 +135,107 @@ Markdownや説明文は禁止です。
 
           input: prompt,
 
-          max_output_tokens: 900,
+          /*
+           * ここが今回の重要な変更。
+           *
+           * 「JSONで返して」と文章で頼むだけではなく、
+           * API側でJSON Schemaを強制する。
+           */
+          text: {
+            format: {
+              type: "json_schema",
+              name: "public_events",
+              strict: true,
+
+              schema: {
+                type: "object",
+                additionalProperties: false,
+
+                properties: {
+                  days: {
+                    type: "array",
+
+                    items: {
+                      type: "object",
+                      additionalProperties: false,
+
+                      properties: {
+                        date: {
+                          type: "string",
+                        },
+
+                        events: {
+                          type: "array",
+
+                          items: {
+                            type: "object",
+                            additionalProperties: false,
+
+                            properties: {
+                              name: {
+                                type: "string",
+                              },
+
+                              time: {
+                                type: "string",
+                              },
+
+                              venue: {
+                                type: "string",
+                              },
+
+                              category: {
+                                type: "string",
+                                enum: [
+                                  "ohara",
+                                  "nezu",
+                                ],
+                              },
+
+                              impactScore: {
+                                type: "integer",
+                                minimum: 0,
+                                maximum: 3,
+                              },
+
+                              description: {
+                                type: "string",
+                              },
+
+                              sourceName: {
+                                type: "string",
+                              },
+                            },
+
+                            required: [
+                              "name",
+                              "time",
+                              "venue",
+                              "category",
+                              "impactScore",
+                              "description",
+                              "sourceName",
+                            ],
+                          },
+                        },
+                      },
+
+                      required: [
+                        "date",
+                        "events",
+                      ],
+                    },
+                  },
+                },
+
+                required: [
+                  "days",
+                ],
+              },
+            },
+          },
+
+          max_output_tokens: 1600,
         }),
       }
     );
@@ -173,44 +252,52 @@ Markdownや説明文は禁止です。
       return res.status(apiRes.status).json({
         error: "OpenAI request failed",
         status: apiRes.status,
+        detail,
       });
     }
 
     const response = await apiRes.json();
 
+    /*
+     * OpenAIが返したoutput_textだけ取り出す。
+     */
     const text = (response.output || [])
       .filter((item) => item.type === "message")
       .flatMap((item) => item.content || [])
       .filter((item) => item.type === "output_text")
       .map((item) => item.text || "")
-      .join("\n")
+      .join("")
       .trim();
 
-    const cleaned = (text || '{"days":[]}')
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/```$/i, "")
-      .trim();
+    if (!text) {
+      console.error(
+        "OpenAI returned no output text:",
+        JSON.stringify(response)
+      );
 
+      return res.status(502).json({
+        error: "OpenAI returned empty response",
+      });
+    }
+
+    /*
+     * Structured Outputsなので、
+     * ここでは正常なら必ずJSONとして解析できる。
+     */
     let parsed;
 
     try {
-      parsed = JSON.parse(cleaned);
+      parsed = JSON.parse(text);
     } catch (error) {
       console.error(
-        "JSON parse failed:",
-        cleaned
+        "Structured JSON parse failed:",
+        text
       );
 
-      parsed = {
-        days: [],
-      };
+      return res.status(502).json({
+        error: "Structured output parse failed",
+      });
     }
-
-    const allowedCategories = new Set([
-      "ohara",
-      "nezu",
-    ]);
 
     const days = Array.isArray(parsed.days)
       ? parsed.days
@@ -220,48 +307,44 @@ Markdownや説明文は禁止です。
             ).slice(0, 10);
 
             const events = Array.isArray(day.events)
-              ? day.events
-                  .slice(0, 6)
-                  .map((e, i) => ({
-                    id: `ai-${dayDate}-${dayIndex}-${i}`,
+              ? day.events.map((e, i) => ({
+                  id: `ai-${dayDate}-${dayIndex}-${i}`,
 
-                    date: dayDate,
+                  date: dayDate,
 
-                    name: String(
-                      e.name || ""
-                    ).slice(0, 120),
+                  name: String(
+                    e.name || ""
+                  ).slice(0, 120),
 
-                    time: String(
-                      e.time || ""
-                    ).slice(0, 60),
+                  time: String(
+                    e.time || ""
+                  ).slice(0, 60),
 
-                    venue: String(
-                      e.venue || ""
-                    ).slice(0, 100),
+                  venue: String(
+                    e.venue || ""
+                  ).slice(0, 100),
 
-                    category: allowedCategories.has(
-                      e.category
-                    )
-                      ? e.category
+                  category:
+                    e.category === "nezu"
+                      ? "nezu"
                       : "ohara",
 
-                    impactScore: Math.max(
-                      0,
-                      Math.min(
-                        3,
-                        Number(e.impactScore) || 0
-                      )
-                    ),
+                  impactScore: Math.max(
+                    0,
+                    Math.min(
+                      3,
+                      Number(e.impactScore) || 0
+                    )
+                  ),
 
-                    description: String(
-                      e.description || ""
-                    ).slice(0, 180),
+                  description: String(
+                    e.description || ""
+                  ).slice(0, 180),
 
-                    sourceName: String(
-                      e.sourceName || ""
-                    ).slice(0, 100),
-                  }))
-                  .filter((e) => e.name)
+                  sourceName: String(
+                    e.sourceName || ""
+                  ).slice(0, 100),
+                }))
               : [];
 
             return {
@@ -269,6 +352,10 @@ Markdownや説明文は禁止です。
               events,
             };
           })
+
+          /*
+           * 対象期間外の日付を除外
+           */
           .filter(
             (day) =>
               /^\d{4}-\d{2}-\d{2}$/.test(day.date) &&
@@ -277,15 +364,51 @@ Markdownや説明文は禁止です。
           )
       : [];
 
-    const events = days.flatMap(
-      (day) => day.events
+    /*
+     * 重複除去
+     */
+    const seen = new Set();
+
+    const events = days
+      .flatMap((day) => day.events)
+      .filter((event) => {
+        const key = [
+          event.date,
+          event.name,
+          event.venue,
+        ]
+          .join("|")
+          .toLowerCase();
+
+        if (seen.has(key)) {
+          return false;
+        }
+
+        seen.add(key);
+        return true;
+      });
+
+    /*
+     * days側も重複除去後のeventsに合わせる
+     */
+    const cleanedDays = days.map((day) => ({
+      date: day.date,
+
+      events: events.filter(
+        (event) => event.date === day.date
+      ),
+    }));
+
+    console.log(
+      "Public events found:",
+      events.length
     );
 
     return res.status(200).json({
       startDate: date,
       endDate,
       area: "小原流会館・根津美術館",
-      days,
+      days: cleanedDays,
       events,
     });
 
@@ -297,6 +420,9 @@ Markdownや説明文は禁止です。
 
     return res.status(500).json({
       error: "Public event search failed",
+      message: String(
+        error?.message || error
+      ),
     });
   }
 }
