@@ -40,13 +40,15 @@ export default async function handler(req, res) {
   const endDate = iso(end);
 
   const prompt = `
-東京都港区南青山の飲食店の来客予測に使用するため、
-次の2施設についてWeb検索してください。
+東京都港区南青山にある飲食店の来客予測に使用するため、
+対象期間中の公開情報をWeb検索してください。
 
 対象期間:
 ${date} 〜 ${endDate}
 
-【小原流会館】
+調査対象は次の4種類です。
+
+【1. 小原流会館】
 
 対象期間中の、
 
@@ -59,9 +61,10 @@ ${date} 〜 ${endDate}
 
 を確認してください。
 
-category は "ohara"。
+category:
+ohara
 
-【根津美術館】
+【2. 根津美術館】
 
 対象期間中の、
 
@@ -73,17 +76,70 @@ category は "ohara"。
 
 を確認してください。
 
-category は "nezu"。
+category:
+nezu
 
-【重要】
+【3. 港区立青南小学校】
 
-・この2施設以外の情報は不要
-・対象期間外の情報は入れない
+公開情報として確認できる対象期間中の、
+
+・保護者会
+・運動会
+・学校公開
+・説明会
+・保護者が来校する行事
+・その他、来校者が増える学校行事
+
+を確認してください。
+
+公開情報で確認できない場合は追加しないでください。
+推測は禁止です。
+
+category:
+seinan_school
+
+【4. 南青山・表参道周辺の主要イベント】
+
+対象地域:
+
+・南青山
+・表参道
+・北青山
+・外苑前
+・神宮前の表参道周辺
+
+対象となる情報:
+
+・大規模または集客力のあるイベント
+・商業施設の主要催事
+・展示会
+・マーケット
+・ポップアップ
+・ファッションイベント
+・文化イベント
+・ホールや会館の主要イベント
+・その他、周辺の人流に影響しそうな催し
+
+小規模なイベントを大量に拾う必要はありません。
+
+飲食店の来客数に影響する可能性があるものを優先し、
+このカテゴリは7日間合計で最大5件までにしてください。
+
+category:
+local_event
+
+【重要ルール】
+
+・対象期間内の情報だけ
 ・開催日が確認できるものだけ
 ・推測は禁止
-・公式サイト、施設公式情報を優先
 ・同じイベントを重複登録しない
-・該当情報がなければ無理に作らない
+・公式サイト、自治体、施設公式情報を優先
+・小規模すぎて人流への影響がほぼないものは不要
+・情報が存在しないカテゴリは空で構わない
+・7日間全体で最大12件程度
+・複数日にわたる企画展やイベントは、
+  対象期間内の各開催日に登録してください
 
 impactScore:
 
@@ -92,12 +148,8 @@ impactScore:
 2 = 中
 3 = 大
 
-小原流会館または根津美術館で
-一般来場者が増える催しがある場合、
-南青山の飲食店のランチ来客への影響を考慮してください。
-
-複数日にわたる展示の場合は、
-対象期間内の各開催日について日付ごとに登録してください。
+小原流会館、根津美術館、青南小学校については、
+特にランチ来客への影響を考慮してください。
 `.trim();
 
   try {
@@ -135,12 +187,6 @@ impactScore:
 
           input: prompt,
 
-          /*
-           * ここが今回の重要な変更。
-           *
-           * 「JSONで返して」と文章で頼むだけではなく、
-           * API側でJSON Schemaを強制する。
-           */
           text: {
             format: {
               type: "json_schema",
@@ -189,6 +235,8 @@ impactScore:
                                 enum: [
                                   "ohara",
                                   "nezu",
+                                  "seinan_school",
+                                  "local_event",
                                 ],
                               },
 
@@ -235,7 +283,7 @@ impactScore:
             },
           },
 
-          max_output_tokens: 1600,
+          max_output_tokens: 1800,
         }),
       }
     );
@@ -258,9 +306,6 @@ impactScore:
 
     const response = await apiRes.json();
 
-    /*
-     * OpenAIが返したoutput_textだけ取り出す。
-     */
     const text = (response.output || [])
       .filter((item) => item.type === "message")
       .flatMap((item) => item.content || [])
@@ -280,10 +325,6 @@ impactScore:
       });
     }
 
-    /*
-     * Structured Outputsなので、
-     * ここでは正常なら必ずJSONとして解析できる。
-     */
     let parsed;
 
     try {
@@ -298,6 +339,13 @@ impactScore:
         error: "Structured output parse failed",
       });
     }
+
+    const allowedCategories = new Set([
+      "ohara",
+      "nezu",
+      "seinan_school",
+      "local_event",
+    ]);
 
     const days = Array.isArray(parsed.days)
       ? parsed.days
@@ -324,10 +372,11 @@ impactScore:
                     e.venue || ""
                   ).slice(0, 100),
 
-                  category:
-                    e.category === "nezu"
-                      ? "nezu"
-                      : "ohara",
+                  category: allowedCategories.has(
+                    e.category
+                  )
+                    ? e.category
+                    : "local_event",
 
                   impactScore: Math.max(
                     0,
@@ -352,10 +401,6 @@ impactScore:
               events,
             };
           })
-
-          /*
-           * 対象期間外の日付を除外
-           */
           .filter(
             (day) =>
               /^\d{4}-\d{2}-\d{2}$/.test(day.date) &&
@@ -364,9 +409,6 @@ impactScore:
           )
       : [];
 
-    /*
-     * 重複除去
-     */
     const seen = new Set();
 
     const events = days
@@ -388,16 +430,23 @@ impactScore:
         return true;
       });
 
-    /*
-     * days側も重複除去後のeventsに合わせる
-     */
-    const cleanedDays = days.map((day) => ({
-      date: day.date,
+    const cleanedDays = [];
 
-      events: events.filter(
-        (event) => event.date === day.date
-      ),
-    }));
+    for (
+      let d = new Date(start);
+      d <= end;
+      d.setDate(d.getDate() + 1)
+    ) {
+      const dayDate = iso(d);
+
+      cleanedDays.push({
+        date: dayDate,
+
+        events: events.filter(
+          (event) => event.date === dayDate
+        ),
+      });
+    }
 
     console.log(
       "Public events found:",
@@ -407,7 +456,8 @@ impactScore:
     return res.status(200).json({
       startDate: date,
       endDate,
-      area: "小原流会館・根津美術館",
+      area:
+        "小原流会館・根津美術館・青南小学校・南青山表参道周辺",
       days: cleanedDays,
       events,
     });
